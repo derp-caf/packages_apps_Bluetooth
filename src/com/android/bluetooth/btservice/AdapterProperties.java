@@ -63,8 +63,13 @@ class AdapterProperties {
     static final int MAX_CONNECTED_AUDIO_DEVICES_LOWER_BOND = 1;
     private static final int MAX_CONNECTED_AUDIO_DEVICES_UPPER_BOUND = 5;
     private static final int BLUETOOTH_NAME_MAX_LENGTH_BYTES = 248;
+
     private static final String A2DP_OFFLOAD_ENABLE_PROPERTY =
             "persist.bluetooth.a2dp_offload.enable";
+    private static final String A2DP_OFFLOAD_DISABLED_PROPERTY =
+            "persist.bluetooth.a2dp_offload.disabled";
+    private static final String A2DP_OFFLOAD_SUPPORTED_PROPERTY =
+            "ro.bluetooth.a2dp_offload.supported";
 
     private static final long DEFAULT_DISCOVERY_TIMEOUT_MS = 12800;
     private static final int BD_ADDR_LEN = 6; // in bytes
@@ -189,12 +194,20 @@ class AdapterProperties {
         // Make sure the final value of max connected audio devices is within allowed range
         mMaxConnectedAudioDevices = Math.min(Math.max(propertyOverlayedMaxConnectedAudioDevices,
                 MAX_CONNECTED_AUDIO_DEVICES_LOWER_BOND), MAX_CONNECTED_AUDIO_DEVICES_UPPER_BOUND);
+        // if QTI stack, overwrite max audio connections to 2
+        if(mService.isVendorIntfEnabled() && mMaxConnectedAudioDevices > 2) {
+            Log.i(TAG, "overwriting mMaxConnectedAudioDevices to 2 for vendor stack");
+            mMaxConnectedAudioDevices = 2;
+        }
+
         Log.i(TAG, "init(), maxConnectedAudioDevices, default="
                 + configDefaultMaxConnectedAudioDevices + ", propertyOverlayed="
                 + propertyOverlayedMaxConnectedAudioDevices + ", finalValue="
                 + mMaxConnectedAudioDevices);
 
-        mA2dpOffloadEnabled = SystemProperties.getBoolean(A2DP_OFFLOAD_ENABLE_PROPERTY, false);
+        mA2dpOffloadEnabled =
+                SystemProperties.getBoolean(A2DP_OFFLOAD_SUPPORTED_PROPERTY, false)
+                && !SystemProperties.getBoolean(A2DP_OFFLOAD_DISABLED_PROPERTY, false);
 
         IntentFilter filter = new IntentFilter();
         filter.addAction(BluetoothHeadset.ACTION_CONNECTION_STATE_CHANGED);
@@ -847,48 +860,27 @@ class AdapterProperties {
             mProfilesConnected = 0;
             mProfilesConnecting = 0;
             mProfilesDisconnecting = 0;
-            // When BT is being turned on, all adapter properties will be sent in 1
-            // callback. At this stage, set the scan mode.
-            if (getState() == BluetoothAdapter.STATE_TURNING_ON
-                    && mScanMode == BluetoothAdapter.SCAN_MODE_NONE) {
-                    /* mDiscoverableTimeout is part of the
-                       adapterPropertyChangedCallback received before
-                       onBluetoothReady */
-                if (mDiscoverableTimeout != 0) {
-                    setScanMode(AbstractionLayer.BT_SCAN_MODE_CONNECTABLE);
-                } else /* if timeout == never (0) at startup */ {
-                    setScanMode(AbstractionLayer.BT_SCAN_MODE_CONNECTABLE_DISCOVERABLE);
-                }
-                    /* though not always required, this keeps NV up-to date on first-boot after
-                    flash */
-                setDiscoverableTimeout(mDiscoverableTimeout);
-            }
+            // adapterPropertyChangedCallback has already been received.  Set the scan mode.
+            setScanMode(AbstractionLayer.BT_SCAN_MODE_CONNECTABLE);
+            // This keeps NV up-to date on first-boot after flash.
+            setDiscoverableTimeout(mDiscoverableTimeout);
         }
     }
 
     void onBleDisable() {
         // Sequence BLE_ON to STATE_OFF - that is _complete_ OFF state.
-        // When BT disable is invoked, set the scan_mode to NONE
-        // so no incoming connections are possible
         debugLog("onBleDisable");
-        if (getState() == BluetoothAdapter.STATE_BLE_TURNING_OFF) {
-            setScanMode(AbstractionLayer.BT_SCAN_MODE_NONE);
-        }
+        // Set the scan_mode to NONE (no incoming connections).
+        setScanMode(AbstractionLayer.BT_SCAN_MODE_NONE);
     }
 
     void onBluetoothDisable() {
         // From STATE_ON to BLE_ON
-        // When BT disable is invoked, set the scan_mode to NONE
-        // so no incoming connections are possible
-
-        //Set flag to indicate we are disabling. When property change of scan mode done
-        //continue with disable sequence
         debugLog("onBluetoothDisable()");
-        if (getState() == BluetoothAdapter.STATE_TURNING_OFF) {
-            // Turn off any Device Search/Inquiry
-            mService.cancelDiscovery();
-            setScanMode(AbstractionLayer.BT_SCAN_MODE_NONE);
-        }
+        // Turn off any Device Search/Inquiry
+        mService.cancelDiscovery();
+        // Set the scan_mode to NONE (no incoming connections).
+        setScanMode(AbstractionLayer.BT_SCAN_MODE_NONE);
     }
 
     void discoveryStateChangeCallback(int state) {
