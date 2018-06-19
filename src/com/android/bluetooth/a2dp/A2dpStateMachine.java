@@ -65,6 +65,7 @@ import java.io.PrintWriter;
 import java.io.StringWriter;
 import java.util.Scanner;
 import android.os.SystemProperties;
+import com.android.bluetooth.btservice.AdapterService;
 
 final class A2dpStateMachine extends StateMachine {
     private static final boolean DBG = true;
@@ -127,6 +128,14 @@ final class A2dpStateMachine extends StateMachine {
 
     public void doQuit() {
         log("doQuit for device " + mDevice);
+        if (mIsPlaying) {
+            // Stop if auido is still playing
+            log("doQuit: stopped playing " + mDevice);
+            mIsPlaying = false;
+            mA2dpService.setAvrcpAudioState(BluetoothA2dp.STATE_NOT_PLAYING, mDevice);
+            broadcastAudioState(BluetoothA2dp.STATE_NOT_PLAYING,
+                                BluetoothA2dp.STATE_PLAYING);
+        }
         quitNow();
     }
 
@@ -178,7 +187,7 @@ final class A2dpStateMachine extends StateMachine {
                         Log.e(TAG, "Disconnected: error connecting to " + mDevice);
                         break;
                     }
-                    if (mA2dpService.okToConnect(mDevice)) {
+                    if (mA2dpService.okToConnect(mDevice, true)) {
                         transitionTo(mConnecting);
                     } else {
                         // Reject the request and stay in Disconnected state
@@ -219,7 +228,7 @@ final class A2dpStateMachine extends StateMachine {
                     Log.w(TAG, "Ignore A2DP DISCONNECTED event: " + mDevice);
                     break;
                 case A2dpStackEvent.CONNECTION_STATE_CONNECTING:
-                    if (mA2dpService.okToConnect(mDevice)) {
+                    if (mA2dpService.okToConnect(mDevice, false)) {
                         Log.i(TAG, "Incoming A2DP Connecting request accepted: " + mDevice);
                         transitionTo(mConnecting);
                     } else {
@@ -230,7 +239,7 @@ final class A2dpStateMachine extends StateMachine {
                     break;
                 case A2dpStackEvent.CONNECTION_STATE_CONNECTED:
                     Log.w(TAG, "A2DP Connected from Disconnected state: " + mDevice);
-                    if (mA2dpService.okToConnect(mDevice)) {
+                    if (mA2dpService.okToConnect(mDevice, false)) {
                         Log.i(TAG, "Incoming A2DP Connected request accepted: " + mDevice);
                         transitionTo(mConnected);
                     } else {
@@ -421,7 +430,7 @@ final class A2dpStateMachine extends StateMachine {
                     transitionTo(mDisconnected);
                     break;
                 case A2dpStackEvent.CONNECTION_STATE_CONNECTED:
-                    if (mA2dpService.okToConnect(mDevice)) {
+                    if (mA2dpService.okToConnect(mDevice, false)) {
                         Log.w(TAG, "Disconnecting interrupted: device is connected: " + mDevice);
                         transitionTo(mConnected);
                     } else {
@@ -431,7 +440,7 @@ final class A2dpStateMachine extends StateMachine {
                     }
                     break;
                 case A2dpStackEvent.CONNECTION_STATE_CONNECTING:
-                    if (mA2dpService.okToConnect(mDevice)) {
+                    if (mA2dpService.okToConnect(mDevice, false)) {
                         Log.i(TAG, "Disconnecting interrupted: try to reconnect: " + mDevice);
                         transitionTo(mConnecting);
                     } else {
@@ -608,12 +617,18 @@ final class A2dpStateMachine extends StateMachine {
         BluetoothCodecConfig prevCodecConfig = null;
         int codec_type = newCodecStatus.getCodecConfig().getCodecType();
         String offloadSupported =
-                SystemProperties.get("persist.vendor.bt.enable.splita2dp");
+                SystemProperties.get("persist.vendor.btstack.enable.splita2dp");
         if (DBG) Log.d(TAG, "START of A2dpService");
         // Split A2dp will be enabled by default
         if (offloadSupported.isEmpty() || "true".equals(offloadSupported)) {
             Log.w(TAG,"Split enabled: codec_type " + codec_type);
             if (codec_type  == BluetoothCodecConfig.SOURCE_CODEC_TYPE_MAX) {
+                AdapterService adapterService = AdapterService.getAdapterService();
+                if (adapterService.isVendorIntfEnabled() &&
+                    adapterService.isTwsPlusDevice(mDevice)) {
+                    Log.d(TAG,"TWSP device streaming,not calling reconfig");
+                    return;
+                }
                 mA2dpService.broadcastReconfigureA2dp();
                 Log.w(TAG,"Split A2dp enabled rcfg send to Audio for codec max");
                 return;

@@ -16,6 +16,7 @@
 
 package com.android.bluetooth.avrcp;
 
+import android.annotation.Nullable;
 import android.media.MediaMetadata;
 import android.media.session.MediaSession;
 import android.media.session.PlaybackState;
@@ -121,6 +122,16 @@ class MediaPlayerWrapper {
     }
 
     Metadata getCurrentMetadata() {
+        // Try to use the now playing list if the information exists.
+        if (getActiveQueueID() != -1) {
+            for (Metadata data : getCurrentQueue()) {
+                if (data.mediaId.equals(Util.NOW_PLAYING_PREFIX + getActiveQueueID())) {
+                    d("getCurrentMetadata: Using playlist data: " + data.toString());
+                    return data.clone();
+                }
+            }
+        }
+
         return Util.toMetadata(getMetadata());
     }
 
@@ -198,8 +209,8 @@ class MediaPlayerWrapper {
             if (currItem == null || !qitem.equals(mdata)) {
                 if (DEBUG) {
                     Log.d(TAG, "Metadata currently out of sync for " + mPackageName);
-                    Log.d(TAG, "  └ Current queueItem: " + currItem);
-                    Log.d(TAG, "  └ Current metadata : " + getMetadata().getDescription());
+                    Log.d(TAG, "  └ Current queueItem: " + qitem);
+                    Log.d(TAG, "  └ Current metadata : " + mdata);
                 }
                 return false;
             }
@@ -268,9 +279,36 @@ class MediaPlayerWrapper {
         d("Controller for " + mPackageName + " was updated.");
     }
 
+    private void sendMediaUpdate() {
+        MediaData newData = new MediaData(
+                Util.toMetadata(getMetadata()),
+                getPlaybackState(),
+                Util.toMetadataList(getQueue()));
+
+        if (newData.equals(mCurrentData)) {
+            // This may happen if the controller is fully synced by the time the
+            // first update is completed
+            Log.v(TAG, "Trying to update with last sent metadata");
+            return;
+        }
+
+        synchronized (mCallbackLock) {
+            if (mRegisteredCallback == null) {
+                Log.e(TAG, mPackageName
+                        + "Trying to send an update with no registered callback");
+                return;
+            }
+
+            Log.v(TAG, "trySendMediaUpdate(): Metadata has been updated for " + mPackageName);
+            mRegisteredCallback.mediaUpdatedCallback(newData);
+        }
+
+        mCurrentData = newData;
+    }
+
     class TimeoutHandler extends Handler {
         private static final int MSG_TIMEOUT = 0;
-        private static final long CALLBACK_TIMEOUT_MS = 1000;
+        private static final long CALLBACK_TIMEOUT_MS = 2000;
 
         TimeoutHandler(Looper looper) {
             super(looper);
@@ -284,11 +322,14 @@ class MediaPlayerWrapper {
             }
 
             Log.e(TAG, "Timeout while waiting for metadata to sync for " + mPackageName);
-            Log.e(TAG, "  └ Current Metadata: " + getMetadata().getDescription());
+            Log.e(TAG, "  └ Current Metadata: " +  Util.toMetadata(getMetadata()));
             Log.e(TAG, "  └ Current Playstate: " + getPlaybackState());
-            for (int i = 0; getQueue() != null && i < getQueue().size(); i++) {
-                Log.e(TAG, "  └ QueueItem(" + i + "): " + getQueue().get(i));
+            List<Metadata> current_queue = Util.toMetadataList(getQueue());
+            for (int i = 0; i < current_queue.size(); i++) {
+                Log.e(TAG, "  └ QueueItem(" + i + "): " + current_queue.get(i));
             }
+
+            sendMediaUpdate();
 
             // TODO(apanicke): Add metric collection here.
 
@@ -331,42 +372,20 @@ class MediaPlayerWrapper {
                 }
             }
 
-            MediaData newData = new MediaData(
-                    Util.toMetadata(getMetadata()),
-                    getPlaybackState(),
-                    Util.toMetadataList(getQueue()));
-
-            if (newData.equals(mCurrentData)) {
-                // This may happen if the controller is fully synced by the time the
-                // first update is completed
-                Log.v(TAG, "Trying to update with last sent metadata");
-                return;
-            }
-
-            synchronized (mCallbackLock) {
-                if (mRegisteredCallback == null) {
-                    Log.e(TAG, mPackageName
-                            + "Trying to send an update with no registered callback");
-                    return;
-                }
-
-                Log.v(TAG, "trySendMediaUpdate(): Metadata has been updated for " + mPackageName);
-                mRegisteredCallback.mediaUpdatedCallback(newData);
-            }
-
-            mCurrentData = newData;
+            sendMediaUpdate();
         }
 
         @Override
-        public void onMetadataChanged(MediaMetadata metadata) {
+        public void onMetadataChanged(@Nullable MediaMetadata metadata) {
             if (!isReady()) {
-                Log.v(TAG, mPackageName + " tried to update with incomplete metadata");
+                Log.v(TAG, "onMetadataChanged(): " + mPackageName
+                        + " tried to update with no queue");
                 return;
             }
 
-            Log.v(TAG, "onMetadataChanged(): " + mPackageName + " : " + metadata.getDescription());
+            Log.v(TAG, "onMetadataChanged(): " + mPackageName + " : " + Util.toMetadata(metadata));
 
-            if (!metadata.equals(getMetadata())) {
+            if (!Objects.equals(metadata, getMetadata())) {
                 e("The callback metadata doesn't match controller metadata");
             }
 
@@ -378,7 +397,7 @@ class MediaPlayerWrapper {
             // TODO: Spotify needs a metadata update debouncer as it sometimes updates the metadata
             // twice in a row with the only difference being that the song duration is rounded to
             // the nearest second.
-            if (metadata.equals(mCurrentData.metadata)) {
+            if (Objects.equals(metadata, mCurrentData.metadata)) {
                 Log.w(TAG, "onMetadataChanged(): " + mPackageName
                         + " tried to update with no new data");
                 return;
@@ -388,9 +407,10 @@ class MediaPlayerWrapper {
         }
 
         @Override
-        public void onPlaybackStateChanged(PlaybackState state) {
+        public void onPlaybackStateChanged(@Nullable PlaybackState state) {
             if (!isReady()) {
-                Log.v(TAG, mPackageName + " tried to update with no state");
+                Log.v(TAG, "onPlaybackStateChanged(): " + mPackageName
+                        + " tried to update with no queue");
                 return;
             }
 
@@ -416,13 +436,14 @@ class MediaPlayerWrapper {
         }
 
         @Override
-        public void onQueueChanged(List<MediaSession.QueueItem> queue) {
-            Log.v(TAG, "onQueueChanged(): " + mPackageName);
-
+        public void onQueueChanged(@Nullable List<MediaSession.QueueItem> queue) {
             if (!isReady()) {
-                Log.v(TAG, mPackageName + " tried to updated with no queue");
+                Log.v(TAG, "onQueueChanged(): " + mPackageName
+                        + " tried to update with no queue");
                 return;
             }
+
+            Log.v(TAG, "onQueueChanged(): " + mPackageName);
 
             if (!Objects.equals(queue, getQueue())) {
                 e("The callback queue isn't the current queue");
@@ -437,7 +458,7 @@ class MediaPlayerWrapper {
 
             if (DEBUG) {
                 for (int i = 0; i < current_queue.size(); i++) {
-                    Log.d(TAG, "  └ QueueItem(" + i + "): " + queue.get(i));
+                    Log.d(TAG, "  └ QueueItem(" + i + "): " + current_queue.get(i));
                 }
             }
 

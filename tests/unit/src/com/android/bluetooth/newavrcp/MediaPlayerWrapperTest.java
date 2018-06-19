@@ -311,6 +311,57 @@ public class MediaPlayerWrapperTest {
         verify(mFailHandler, never()).onTerribleFailure(any(), any(), anyBoolean());
     }
 
+    /*
+     * This test checks whether getCurrentMetadata() returns the corresponding item from
+     * the now playing list instead of the current metadata if there is a match.
+     */
+    @Test
+    public void testCurrentSongFromQueue() {
+        // Create the wrapper object and register the looper with the timeout handler
+        TestLooperManager looperManager = new TestLooperManager(mThread.getLooper());
+
+        mTestState.setActiveQueueItemId(101);
+        doReturn(mTestState.build()).when(mMockController).getPlaybackState();
+
+        MediaPlayerWrapper wrapper =
+                MediaPlayerWrapper.wrap(mMockController, mThread.getLooper());
+        wrapper.registerCallback(mTestCbs);
+
+        // The current metadata doesn't contain track number info so check that
+        // field to see if the correct data was used.
+        Assert.assertEquals(wrapper.getCurrentMetadata().trackNum, "2");
+        Assert.assertEquals(wrapper.getCurrentMetadata().numTracks, "3");
+    }
+
+    @Test
+    public void testNullMetadata() {
+        // Create the wrapper object and register the looper with the timeout handler
+        TestLooperManager looperManager = new TestLooperManager(mThread.getLooper());
+        MediaPlayerWrapper wrapper =
+                MediaPlayerWrapper.wrap(mMockController, mThread.getLooper());
+        wrapper.registerCallback(mTestCbs);
+
+        // Return null when getting the queue
+        doReturn(null).when(mMockController).getQueue();
+
+        // Grab the callbacks the wrapper registered with the controller
+        verify(mMockController).registerCallback(mControllerCbs.capture(), any());
+        MediaController.Callback controllerCallbacks = mControllerCbs.getValue();
+
+        // Update Metadata returned by controller
+        mTestMetadata.putString(MediaMetadata.METADATA_KEY_TITLE, "New Title");
+        doReturn(mTestMetadata.build()).when(mMockController).getMetadata();
+
+        // Call the callback
+        controllerCallbacks.onMetadataChanged(null);
+
+        // Assert that the metadata returned by getMetadata() is used instead of null
+        verify(mTestCbs, times(1)).mediaUpdatedCallback(mMediaUpdateData.capture());
+        MediaData data = mMediaUpdateData.getValue();
+        Assert.assertEquals("Returned metadata is incorrect", data.metadata,
+                Util.toMetadata(mTestMetadata.build()));
+    }
+
     @Test
     public void testNullQueue() {
         // Create the wrapper object and register the looper with the timeout handler
@@ -480,7 +531,7 @@ public class MediaPlayerWrapperTest {
         verify(mMockController).registerCallback(mControllerCbs.capture(), any());
         MediaController.Callback controllerCallbacks = mControllerCbs.getValue();
 
-        // Update Metdata returned by controller
+        // Update Metadata returned by controller
         mTestMetadata.putString(MediaMetadata.METADATA_KEY_TITLE, "New Title");
         doReturn(mTestMetadata.build()).when(mMockController).getMetadata();
         controllerCallbacks.onMetadataChanged(mTestMetadata.build());
@@ -540,7 +591,7 @@ public class MediaPlayerWrapperTest {
         verify(mMockController).registerCallback(mControllerCbs.capture(), any());
         MediaController.Callback controllerCallbacks = mControllerCbs.getValue();
 
-        // Update Metdata returned by controller
+        // Update Metadata returned by controller
         mTestMetadata.putString(MediaMetadata.METADATA_KEY_TITLE, "Mismatch Title");
         doReturn(mTestMetadata.build()).when(mMockController).getMetadata();
         controllerCallbacks.onMetadataChanged(mTestMetadata.build());
@@ -550,6 +601,22 @@ public class MediaPlayerWrapperTest {
 
         // Assert that there was a timeout
         verify(mFailHandler).onTerribleFailure(any(), any(), anyBoolean());
+
+        // Assert that the callback was called with the mismatch data
+        verify(mTestCbs, times(1)).mediaUpdatedCallback(mMediaUpdateData.capture());
+        MediaData data = mMediaUpdateData.getValue();
+        Assert.assertEquals(
+                "Returned Metadata isn't equal to given Metadata",
+                data.metadata,
+                Util.toMetadata(mTestMetadata.build()));
+        Assert.assertEquals(
+                "Returned PlaybackState isn't equal to given PlaybackState",
+                data.state.toString(),
+                mTestState.build().toString());
+        Assert.assertEquals(
+                "Returned Queue isn't equal to given Queue",
+                data.queue,
+                Util.toMetadataList(getQueueFromDescriptions(mTestQueue)));
     }
 
     /*
