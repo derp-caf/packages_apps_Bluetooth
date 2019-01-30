@@ -1303,11 +1303,14 @@ public class HeadsetService extends ProfileService {
                 }
                 broadcastActiveDevice(mActiveDevice);
             } else if (shouldPersistAudio()) {
-                if (!connectAudio(mActiveDevice)) {
-                    Log.e(TAG, "setActiveDevice: fail to connectAudio to " + mActiveDevice);
-                    mActiveDevice = previousActiveDevice;
-                    mNativeInterface.setActiveDevice(previousActiveDevice);
-                    return false;
+                boolean isPts = SystemProperties.getBoolean("vendor.bt.pts.certification", false);
+                if (!isPts) {
+                    if (!connectAudio(mActiveDevice)) {
+                        Log.e(TAG, "setActiveDevice: fail to connectAudio to " + mActiveDevice);
+                        mActiveDevice = previousActiveDevice;
+                        mNativeInterface.setActiveDevice(previousActiveDevice);
+                        return false;
+                    }
                 }
                 broadcastActiveDevice(mActiveDevice);
             } else {
@@ -1952,14 +1955,29 @@ public class HeadsetService extends ProfileService {
                     if (!stopVoiceRecognitionByHeadset(device)) {
                         Log.w(TAG, "onAudioStateChangedFromStateMachine: failed to stop voice "
                                 + "recognition");
+                    } else {
+                        final HeadsetStateMachine stateMachine = mStateMachines.get(device);
+                        if (stateMachine != null) {
+                            Log.d(TAG, "onAudioStateChangedFromStateMachine: send +bvra:0");
+                            stateMachine.sendMessage(HeadsetStateMachine.VOICE_RECOGNITION_STOP,
+                                    device);
+                        }
                     }
                 }
-                if (mVirtualCallStarted) {
-                    if (!stopScoUsingVirtualVoiceCall()) {
-                        Log.w(TAG, "onAudioStateChangedFromStateMachine: failed to stop virtual "
-                                + "voice call");
+
+                if (mAdapterService.isTwsPlusDevice(device) &&
+                    isAudioConnected(getTwsPlusConnectedPeer(device))) {
+                    Log.w(TAG, "Ignore stop virtuall voice call if the other TWS+ device is "
+                            + "audio connected");
+                } else {
+                    if (mVirtualCallStarted) {
+                        if (!stopScoUsingVirtualVoiceCall()) {
+                            Log.w(TAG, "onAudioStateChangedFromStateMachine: failed to stop "
+                                    + "virtual voice call");
+                        }
                     }
                 }
+
                 //Transfer SCO is not needed for TWS+ devices
                 if (!mAdapterService.isTwsPlusDevice(device)) {
                     // trigger SCO after SCO disconnected with previous active

@@ -227,11 +227,17 @@ class ActiveDeviceManager {
                                     + "device " + device + " disconnected");
                         }
                         mA2dpConnectedDevices.remove(device);
+                        final A2dpService a2dpService = mFactory.getA2dpService();
+
                         if (Objects.equals(mA2dpActiveDevice, device)) {
                             if (!mA2dpConnectedDevices.isEmpty() &&
-                                mAdapterService.isTwsPlusDevice(mA2dpConnectedDevices.get(0)))
+                                mAdapterService.isTwsPlusDevice(mA2dpConnectedDevices.get(0)) &&
+                                (a2dpService != null) &&
+                                (a2dpService.getConnectionState(mA2dpConnectedDevices.get(0)) ==
+                                         BluetoothProfile.STATE_CONNECTED)) {
+                                Log.d(TAG, "calling set a2dp Active dev: " + mA2dpConnectedDevices.get(0));
                                 setA2dpActiveDevice(mA2dpConnectedDevices.get(0));
-                            else
+                            } else
                                 setA2dpActiveDevice(null);
                         }
                     }
@@ -289,10 +295,15 @@ class ActiveDeviceManager {
                                     "handleMessage(MESSAGE_HFP_ACTION_CONNECTION_STATE_CHANGED): "
                                     + "device " + device + " disconnected");
                         }
+                        final HeadsetService hfpService = mFactory.getHeadsetService();
+
                         mHfpConnectedDevices.remove(device);
                         if (Objects.equals(mHfpActiveDevice, device)) {
                             if (!mHfpConnectedDevices.isEmpty() &&
-                               mAdapterService.isTwsPlusDevice(mHfpConnectedDevices.get(0))) {
+                               mAdapterService.isTwsPlusDevice(mHfpConnectedDevices.get(0)) &&
+                               (hfpService != null) &&
+                                (hfpService.getConnectionState(mHfpConnectedDevices.get(0)) ==
+                                         BluetoothProfile.STATE_CONNECTED)) {
                                setHfpActiveDevice(mHfpConnectedDevices.get(0));
                                Log.d(TAG, "calling set Active dev: " + mHfpConnectedDevices.get(0));
                             } else {
