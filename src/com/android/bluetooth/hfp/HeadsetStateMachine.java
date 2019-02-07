@@ -1512,7 +1512,8 @@ public class HeadsetStateMachine extends StateMachine {
             // Set active device to current active SCO device when the current active device
             // is different from mCurrentDevice. This is to accommodate active device state
             // mis-match between native and Java.
-            if (!mDevice.equals(mHeadsetService.getActiveDevice())) {
+            if (!mDevice.equals(mHeadsetService.getActiveDevice())
+                    && !hasDeferredMessages(DISCONNECT_AUDIO)) {
                 mHeadsetService.setActiveDevice(mDevice);
             }
             // If current device is TWSPLUS device and peer TWSPLUS device is already
@@ -1648,18 +1649,11 @@ public class HeadsetStateMachine extends StateMachine {
 
         private void processIntentScoVolume(Intent intent, BluetoothDevice device) {
             int volumeValue = intent.getIntExtra(AudioManager.EXTRA_VOLUME_STREAM_VALUE, 0);
-            boolean ptsEnabled = SystemProperties.getBoolean("vendor.bt.pts.certification", false);
-            stateLogD(" mSpeakerVolume = " + mSpeakerVolume + " volValue = " + volumeValue
-                      +" PTS_ENABLED = " + ptsEnabled);
+            stateLogD(" mSpeakerVolume = " + mSpeakerVolume + " volValue = " + volumeValue);
             if (mSpeakerVolume != volumeValue) {
                 mSpeakerVolume = volumeValue;
-                if(!ptsEnabled) {
-                    mNativeInterface.setVolume(device, HeadsetHalConstants.VOLUME_TYPE_SPK,
-                            mSpeakerVolume);
-                } else {
-                    mNativeInterface.setVolume(device, HeadsetHalConstants.VOLUME_TYPE_SPK,
-                            0);
-                }
+                mNativeInterface.setVolume(device, HeadsetHalConstants.VOLUME_TYPE_SPK,
+                    mSpeakerVolume);
             }
         }
     }
@@ -2507,18 +2501,23 @@ public class HeadsetStateMachine extends StateMachine {
     private void processKeyPressed(BluetoothDevice device) {
         if (mSystemInterface.isRinging()) {
             mSystemInterface.answerCall(device);
-        } else if (mSystemInterface.isInCall()) {
-            if (getAudioState() == BluetoothHeadset.STATE_AUDIO_DISCONNECTED) {
-                // Should connect audio as well
-                if (!mHeadsetService.setActiveDevice(mDevice)) {
-                    Log.w(TAG, "processKeyPressed, failed to set active device to " + mDevice);
-                }
-            } else {
-                mSystemInterface.hangupCall(device);
-            }
         } else if (getAudioState() != BluetoothHeadset.STATE_AUDIO_DISCONNECTED) {
             if (!mNativeInterface.disconnectAudio(mDevice)) {
                 Log.w(TAG, "processKeyPressed, failed to disconnect audio from " + mDevice);
+            }
+        } else if (mSystemInterface.isInCall()) {
+            if (getAudioState() == BluetoothHeadset.STATE_AUDIO_DISCONNECTED) {
+                // Should connect audio as well
+                if (mDevice.equals(mHeadsetService.getActiveDevice())) {
+                    Log.w(TAG, "processKeyPressed: device "+ mDevice+" is active, create SCO");
+                    mNativeInterface.connectAudio(mDevice);
+                } else {
+                    //Set active device and create SCO
+                    if (!mHeadsetService.setActiveDevice(mDevice)) {
+                        Log.w(TAG, "processKeyPressed, failed to set active device to "
+                              + mDevice);
+                    }
+                }
             }
         } else {
             // We have already replied OK to this HSP command, no feedback is needed
