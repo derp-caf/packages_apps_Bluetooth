@@ -284,6 +284,12 @@ public class AdapterService extends Service {
         }
     }
 
+    public void StartHCIClose() {
+        if (isVendorIntfEnabled()) {
+            mVendor.HCIClose();
+        }
+    }
+
      public void voipNetworkWifiInfo(boolean isVoipStarted, boolean isNetworkWifi) {
         Log.i(TAG, "In voipNetworkWifiInfo, isVoipStarted: " + isVoipStarted +
                     ", isNetworkWifi: " + isNetworkWifi);
@@ -2130,6 +2136,18 @@ public class AdapterService extends Service {
         for (BluetoothDevice device : bondedDevices) {
             mRemoteDevices.updateUuids(device);
         }
+    }
+
+    /**
+     * Update device UUID changed to {@link BondStateMachine}
+     *
+     * @param device remote device of interest
+     */
+    public void deviceUuidUpdated(BluetoothDevice device) {
+        // Notify BondStateMachine for SDP complete / UUID changed.
+        Message msg = mBondStateMachine.obtainMessage(BondStateMachine.UUID_UPDATE);
+        msg.obj = device;
+        mBondStateMachine.sendMessage(msg);
     }
 
     boolean cancelBondProcess(BluetoothDevice device) {
