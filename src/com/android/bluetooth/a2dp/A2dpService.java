@@ -18,6 +18,7 @@ package com.android.bluetooth.a2dp;
 
 import android.bluetooth.BluetoothA2dp;
 import android.bluetooth.BluetoothAdapter;
+import com.android.bluetooth.a2dpsink.A2dpSinkService;
 import android.bluetooth.BluetoothCodecConfig;
 import android.bluetooth.BluetoothCodecStatus;
 import android.bluetooth.BluetoothDevice;
@@ -65,6 +66,8 @@ public class A2dpService extends ProfileService {
     private static final String TAG = "A2dpService";
 
     private static A2dpService sA2dpService;
+    private static A2dpSinkService sA2dpSinkService;
+    private static boolean mA2dpSrcSnkConcurrency;
 
     private BluetoothAdapter mAdapter;
     private AdapterService mAdapterService;
@@ -210,6 +213,11 @@ public class A2dpService extends ProfileService {
         mA2dpOffloadEnabled = mAdapterService.isA2dpOffloadEnabled();
         if (DBG) {
             Log.d(TAG, "A2DP offload flag set to " + mA2dpOffloadEnabled);
+        }
+        mA2dpSrcSnkConcurrency= SystemProperties.getBoolean(
+                                "persist.vendor.service.bt.a2dp_concurrency", false);
+        if (DBG) {
+            Log.d(TAG, "A2DP concurrency set to " + mA2dpSrcSnkConcurrency);
         }
 
         // Step 8: Setup broadcast receivers
@@ -372,12 +380,21 @@ public class A2dpService extends ProfileService {
                 Log.e(TAG, "Cannot connect to " + device + " : no state machine");
                 return false;
             }
+            if (mA2dpSrcSnkConcurrency) {
+                sA2dpSinkService = A2dpSinkService.getA2dpSinkService();
+                List<BluetoothDevice> srcDevs = sA2dpSinkService.getConnectedDevices();
+                for ( BluetoothDevice src : srcDevs ) {
+                    Log.d(TAG, "calling sink disconnect to " + src);
+                    sA2dpSinkService.disconnect(src);
+                }
+            }
+
             smConnect.sendMessage(A2dpStateMachine.CONNECT);
             return true;
         }
     }
 
-    boolean disconnect(BluetoothDevice device) {
+    public boolean disconnect(BluetoothDevice device) {
         enforceCallingOrSelfPermission(BLUETOOTH_ADMIN_PERM, "Need BLUETOOTH ADMIN permission");
         if (DBG) {
             Log.d(TAG, "disconnect(): " + device);
@@ -526,18 +543,24 @@ public class A2dpService extends ProfileService {
         }
 
         // Check priority and accept or reject the connection.
+        // Note: Logic can be simplified, but keeping it this way for readability
         int priority = getPriority(device);
         int bondState = mAdapterService.getBondState(device);
-        // Allow this connection only if the device is bonded. Any attempt to connect while
-        // bonding would potentially lead to an unauthorized connection.
-        if (bondState != BluetoothDevice.BOND_BONDED) {
-            Log.w(TAG, "okToConnect: return false, bondState=" + bondState);
-            return false;
-        } else if (priority != BluetoothProfile.PRIORITY_UNDEFINED
-                && priority != BluetoothProfile.PRIORITY_ON
-                && priority != BluetoothProfile.PRIORITY_AUTO_CONNECT) {
-            // Otherwise, reject the connection if priority is not valid.
-            Log.w(TAG, "okToConnect: return false, priority=" + priority);
+        // If priority is undefined, it is likely that service discovery has not completed and peer
+        // initiated the connection. Allow this connection only if the device is bonded or bonding
+        boolean serviceDiscoveryPending = (priority == BluetoothProfile.PRIORITY_UNDEFINED)
+                && (bondState == BluetoothDevice.BOND_BONDING
+                || bondState == BluetoothDevice.BOND_BONDED);
+        // Also allow connection when device is bonded/bonding and priority is ON/AUTO_CONNECT.
+        boolean isEnabled = (priority == BluetoothProfile.PRIORITY_ON
+                || priority == BluetoothProfile.PRIORITY_AUTO_CONNECT)
+                && (bondState == BluetoothDevice.BOND_BONDED
+                || bondState == BluetoothDevice.BOND_BONDING);
+        if (!serviceDiscoveryPending && !isEnabled) {
+            // Otherwise, reject the connection if no service discovery is pending and priority is
+            // neither PRIORITY_ON nor PRIORITY_AUTO_CONNECT
+            Log.w(TAG, "okToConnect: return false, priority=" + priority + ", bondState="
+                    + bondState);
             return false;
         }
         return true;
@@ -1121,6 +1144,15 @@ public class A2dpService extends ProfileService {
                 Log.e(TAG, "Cannot process stack event: no state machine: " + stackEvent);
                 return;
             }
+            if (mA2dpSrcSnkConcurrency &&
+                A2dpStackEvent.CONNECTION_STATE_CONNECTING == stackEvent.valueInt) {
+                sA2dpSinkService = A2dpSinkService.getA2dpSinkService();
+                List<BluetoothDevice> srcDevs = sA2dpSinkService.getConnectedDevices();
+                for ( BluetoothDevice src : srcDevs ) {
+                    Log.d(TAG, "calling sink disconnect to " + src);
+                    sA2dpSinkService.disconnect(src);
+                }
+            }
             sm.sendMessage(A2dpStateMachine.STACK_EVENT, stackEvent);
         }
     }
@@ -1302,7 +1334,7 @@ public class A2dpService extends ProfileService {
         }
     }
 
-    private void updateOptionalCodecsSupport(BluetoothDevice device) {
+    public void updateOptionalCodecsSupport(BluetoothDevice device) {
         int previousSupport = getSupportsOptionalCodecs(device);
         boolean supportsOptional = false;
 
